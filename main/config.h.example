@@ -101,6 +101,6 @@ static const ha_sensor_t SENSOR_LIST[] = {
 #define CAM_MAX_W   1280
 #define CAM_MAX_H   720
 /* Set to 1 if the camera image shows wrong colors (R/B swapped).              */
-#define CAM_SWAP_BYTES 1
+#define CAM_SWAP_BYTES 0
 
 #endif /* CONFIG_H */

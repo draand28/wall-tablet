@@ -24,7 +24,7 @@
 
 #define MJPEG_NOFRAME_TIMEOUT_MS  8000   /* switch to snapshot if no MJPEG frames */
 #define MJPEG_RETRY_INTERVAL_MS   60000  /* re-test MJPEG while in snapshot mode */
-#define SNAPSHOT_INTERVAL_MS      2500
+#define SNAPSHOT_INTERVAL_MS      1500
 
 typedef enum {
     CAM_MODE_MJPEG,
