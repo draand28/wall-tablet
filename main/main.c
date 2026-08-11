@@ -22,6 +22,8 @@
 #include "ui.h"
 #include "camera.h"
 #include "ha.h"
+#include "ota.h"
+#include "log_server.h"
 
 #define TAG "MAIN"
 
@@ -35,6 +37,14 @@ static void on_toggle(const char *entity)
 {
     if (s_cmd_q) {
         xQueueSend(s_cmd_q, &entity, 0);
+    }
+}
+
+static void on_update(void)
+{
+    esp_err_t err = ota_start(OTA_URL, ui_set_ota_status);
+    if (err != ESP_OK) {
+        ui_set_ota_status("failed");
     }
 }
 
@@ -164,8 +174,12 @@ void app_main(void)
     bsp_wifi_connect(WIFI_SSID, WIFI_PASSWORD);
     sntp_init_net();
 
+    esp_log_set_vprintf(log_server_vprintf);
+    log_server_start();
+
     ha_init();
     ui_set_toggle_callback(on_toggle);
+    ui_set_update_callback(on_update);
     ui_init();
 
     set_lcd_blight(100);

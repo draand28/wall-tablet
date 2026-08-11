@@ -20,4 +20,9 @@ void ui_set_wifi(const char *text);
 typedef void (*ui_toggle_fn_t)(const char *entity);
 void ui_set_toggle_callback(ui_toggle_fn_t cb);
 
+/* Over-the-air update button */
+typedef void (*ui_update_fn_t)(void);
+void ui_set_update_callback(ui_update_fn_t cb);
+void ui_set_ota_status(const char *text);
+
 #endif /* UI_H */

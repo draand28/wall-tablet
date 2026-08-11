@@ -39,6 +39,11 @@
 #define HA_PORT         8123
 #define HA_TOKEN        "YOUR_LONG_LIVED_ACCESS_TOKEN"
 
+/* --------------------------- Over-the-air update -------------------------- */
+/* Serve build/wall_tablet.bin from an always-on host, then tap "UPDATE" on
+ * the tablet. See tools/push-ota.ps1 and config.h for details. */
+#define OTA_URL         "http://YOUR_SERVER:8000/wall_tablet.bin"
+
 /* ---------------------------------- Timezone ----------------------------- */
 /* POSIX TZ string for the on-screen clock. Examples:
  *   "UTC0"

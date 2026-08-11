@@ -29,6 +29,10 @@
 #define C_BORDER    0x2A323C
 
 static ui_toggle_fn_t g_toggle_cb = NULL;
+static ui_update_fn_t g_update_cb = NULL;
+
+static lv_obj_t *update_btn = NULL;
+static lv_obj_t *update_btn_lbl = NULL;
 
 static lv_obj_t *cam_view, *cam_img, *cam_live, *cam_status;
 static lv_obj_t *clock_lbl, *date_lbl, *wifi_lbl;
@@ -102,6 +106,14 @@ static void more_evt(lv_event_t *e)
     (void)e;
     lv_obj_clear_flag(more_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(more_overlay);
+}
+
+static void update_evt(lv_event_t *e)
+{
+    (void)e;
+    if (g_update_cb) {
+        g_update_cb();
+    }
 }
 
 static void ui_build_quick(void)
@@ -260,6 +272,11 @@ void ui_init(void)
     ui_build_quick();
     ui_build_sensors(lv_scr_act());
 
+    update_btn = make_btn(right, "UPDATE", PANEL_R_W - 24, 40,
+                          update_evt, NULL);
+    lv_obj_align(update_btn, LV_ALIGN_BOTTOM_LEFT, 12, -108);
+    update_btn_lbl = lv_obj_get_child(update_btn, 0);
+
     lv_obj_t *more_btn = make_btn(right, "ALL LIGHTS", PANEL_R_W - 24, 56,
                                   more_evt, NULL);
     lv_obj_align(more_btn, LV_ALIGN_BOTTOM_LEFT, 12, -62);
@@ -278,6 +295,27 @@ void ui_init(void)
 void ui_set_toggle_callback(ui_toggle_fn_t cb)
 {
     g_toggle_cb = cb;
+}
+
+void ui_set_update_callback(ui_update_fn_t cb)
+{
+    g_update_cb = cb;
+}
+
+void ui_set_ota_status(const char *text)
+{
+    if (!LOCK()) return;
+    if (update_btn_lbl) {
+        lv_label_set_text(update_btn_lbl, text);
+    }
+    lv_obj_t *btn = lv_obj_get_parent(update_btn_lbl);
+    if (btn) {
+        lv_obj_set_style_bg_color(btn,
+            (strcmp(text, "update failed") == 0) ? lv_color_hex(0x8E2A2A)
+                                                 : lv_color_hex(C_OFF),
+            LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+    UNLOCK();
 }
 
 /* aspect-fit the source frame into the camera viewport (no LVGL zoom, which
