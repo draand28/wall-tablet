@@ -1,0 +1,17 @@
+# Build output
+build/
+
+# ESP-IDF component manager downloads (resolved from main/idf_component.yml)
+managed_components/
+dependencies.lock
+
+# Local machine state
+sdkconfig.old
+
+# Secrets: the real config.h contains WiFi password + Home Assistant token.
+# A sanitized config.h.example is committed instead.
+main/config.h
+
+# IDE / editor
+.vscode/
+.idea/

@@ -1,0 +1,106 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+/* ============================================================================
+ *  WALL TABLET - USER CONFIGURATION
+ *  Edit values here, then rebuild + reflash. Most changes need only:
+ *      idf.py build  &&  idf.py -p COM3 flash
+ * ==========================================================================*/
+
+/* ------------------------------- WiFi ------------------------------------ */
+#define WIFI_SSID       "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD   "YOUR_WIFI_PASSWORD"
+
+/* -------------------- Frigate / go2rtc (camera feed) --------------------- */
+/* Frigate is running as a TrueNAS Scale app. Use the HOST-MAPPED web port
+ * (the one you open in the browser to reach Frigate), NOT the internal 5000.
+ * The P4 cannot decode H.264, so we pull an MJPEG stream from go2rtc, which
+ * Frigate bundles and exposes through its web port. */
+#define FRIGATE_HOST    "YOUR_FRIGATE_IP"
+#define FRIGATE_PORT    5000
+#define CAMERA_NAME     "YOUR_CAMERA_NAME"
+
+/* go2rtc API path as proxied by Frigate's nginx. Frigate >= 0.13:
+ *   /api/go2rtc/api/...
+ * Older Frigate versions may use:
+ *   /api/go2rtc/...
+ * Verify the final URL in a desktop browser first:
+ *   http://YOUR_FRIGATE_IP:5000/api/go2rtc/api/stream.mjpeg?src=YOUR_CAMERA_NAME
+ * You should see a live MJPEG slideshow. */
+#define GO2RTC_PATH_PREFIX  "api/go2rtc/api"
+
+/* Name of the go2rtc stream that outputs MJPEG (for a TRUE live feed).
+ * See the comments in config.h; until a transcoded stream exists, the
+ * tablet falls back to polling /api/<camera>/latest.jpg snapshots. */
+#define MJPEG_STREAM_NAME   CAMERA_NAME
+
+/* --------------------------------- Home Assistant ------------------------ */
+#define HA_HOST         "YOUR_HA_IP"
+#define HA_PORT         8123
+#define HA_TOKEN        "YOUR_LONG_LIVED_ACCESS_TOKEN"
+
+/* ---------------------------------- Timezone ----------------------------- */
+/* POSIX TZ string for the on-screen clock. Examples:
+ *   "UTC0"
+ *   "CET-1CEST,M3.5.0,M10.5.0/3"           (Central European)
+ *   "EST5EDT,M3.2.0,M11.1.0"               (US Eastern)
+ *   "PST8PDT,M3.2.0,M11.1.0"               (US Pacific)                        */
+#define TZ_STRING       "UTC0"
+
+/* ------------------------------- Entities -------------------------------- */
+/* IMPORTANT: these are PLACEHOLDERS. Replace the entity_id strings with your
+ * real Home Assistant entity IDs (find them under
+ * Developer Tools -> States in Home Assistant). Max 6 quick buttons.          */
+
+typedef struct {
+    const char *label;      /* text shown on the button */
+    const char *entity;     /* HA entity_id, e.g. light.living_room            */
+} ha_button_t;
+
+static const ha_button_t QUICK_BTNS[] = {
+    { "Living",   "light.living_room" },
+    { "Kitchen",  "light.kitchen" },
+    { "Bedroom",  "light.bedroom" },
+    { "Hall",     "light.hall" },
+    { "TV Scene", "scene.movie_night" },
+    { "Bath",     "light.bathroom" },
+};
+#define QUICK_BTNS_COUNT (sizeof(QUICK_BTNS) / sizeof(QUICK_BTNS[0]))
+
+/* Extra lights/switches shown in the "All Lights" panel (scrollable).         */
+static const ha_button_t EXTRA_BTNS[] = {
+    { "Dining",     "light.dining_room" },
+    { "Garage",     "light.garage" },
+    { "Office",     "light.office" },
+    { "Balcony",    "light.balcony" },
+    { "Garden",     "light.garden" },
+    { "Kids Room",  "light.kids_room" },
+    { "Fan",        "switch.fan" },
+    { "Water Heater","switch.water_heater" },
+};
+#define EXTRA_BTNS_COUNT (sizeof(EXTRA_BTNS) / sizeof(EXTRA_BTNS[0]))
+
+/* Sensors monitored on the right panel. Format: { label, entity_id, unit }    */
+typedef struct {
+    const char *label;
+    const char *entity;
+    const char *unit;       /* suffix shown after the value, e.g. "°C", "%"    */
+} ha_sensor_t;
+
+static const ha_sensor_t SENSOR_LIST[] = {
+    { "Door Temp", "sensor.doorway_temperature", "C" },
+    { "Door Hum",  "sensor.doorway_humidity",    "%" },
+    { "Pwr Now",   "sensor.house_power_now",     "W" },
+    { "Energy",    "sensor.house_energy_today",  "kWh" },
+};
+#define SENSOR_COUNT (sizeof(SENSOR_LIST) / sizeof(SENSOR_LIST[0]))
+
+/* ------------------------------ Camera tune ------------------------------- */
+/* JPEG decoder output limit. Frames larger than this are downscaled 1/2, 1/4.
+ * 1280x720 RGB565 = 1.84 MB per buffer (2 buffers used, from the 32 MB PSRAM). */
+#define CAM_MAX_W   1280
+#define CAM_MAX_H   720
+/* Set to 1 if the camera image shows wrong colors (R/B swapped).              */
+#define CAM_SWAP_BYTES 1
+
+#endif /* CONFIG_H */
