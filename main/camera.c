@@ -9,6 +9,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
+#include "driver/jpeg_decode.h"
+#include "driver/jpeg_types.h"
 
 /* The Espressif esp_jpeg component exposes its API via "jpeg_decoder.h". */
 #include "jpeg_decoder.h"
@@ -21,6 +23,8 @@
 
 #define FRAME_MAX_BYTES (512 * 1024)
 #define OUTBUF_BYTES    (CAM_MAX_W * CAM_MAX_H * 2)
+/* hardware decoder outputs rows padded to a multiple of 16 */
+#define HW_RAW_BYTES    ((((CAM_MAX_W) + 15) & ~15u) * (((CAM_MAX_H) + 15) & ~15u) * 2)
 
 #define MJPEG_NOFRAME_TIMEOUT_MS  8000   /* switch to snapshot if no MJPEG frames */
 #define MJPEG_RETRY_INTERVAL_MS   60000  /* re-test MJPEG while in snapshot mode */
@@ -36,19 +40,46 @@ static size_t s_frame_len = 0;
 static bool s_soi_seen = false;
 static bool s_prev_ff = false;
 
-static uint8_t *s_out[2];
+static uint8_t *s_out[2];     /* tightly packed RGB565 display buffers */
 static int s_front = 0;
 
-/* TJpgDec scratch pool. The default 3100-byte buffer is too small once the
- * JPEG's quantization + huffman tables are also carved out of the pool. */
+static uint8_t *s_hw_raw;                 /* hardware decoder output */
+static jpeg_decoder_handle_t s_hw = NULL; /* hardware JPEG decoder engine */
+static bool s_hw_ok = false;
+
+/* TJpgDec scratch pool (software fallback). */
 #define JPEG_WORK_SIZE 16384
 static uint8_t *s_jpeg_work;
 
 static cam_mode_t s_mode = CAM_MODE_MJPEG;
 static volatile bool s_frame_ok = false;
 
-/* ----------------------------- JPEG decode ------------------------------- */
-static void decode_and_show(uint8_t *frame, size_t flen)
+/* Candidate go2rtc MJPEG stream names, probed in order until one yields
+ * frames: configured name, camera name, camera name + "_mjpeg". */
+static char s_mjpeg_url[3][192];
+static int s_mjpeg_url_count = 0;
+static int s_active_url = 0;
+
+static void build_mjpeg_urls(void)
+{
+    char extra[64];
+    snprintf(extra, sizeof(extra), "%s_mjpeg", CAMERA_NAME);
+
+    const char *names[3] = { MJPEG_STREAM_NAME, CAMERA_NAME, extra };
+    s_mjpeg_url_count = 0;
+    for (int i = 0; i < 3; i++) {
+        snprintf(s_mjpeg_url[i], sizeof(s_mjpeg_url[0]),
+                 "http://%s:%d/%s/stream.mjpeg?src=%s",
+                 FRIGATE_HOST, FRIGATE_PORT, GO2RTC_PATH_PREFIX, names[i]);
+        s_mjpeg_url_count++;
+    }
+    s_active_url = 0;
+    ESP_LOGI(TAG, "mjpeg candidates: %s | %s | %s", s_mjpeg_url[0],
+             s_mjpeg_url[1], s_mjpeg_url[2]);
+}
+
+/* ------------------------ software decode (fallback) --------------------- */
+static void software_decode(uint8_t *frame, size_t flen)
 {
     esp_jpeg_image_scale_t scale = JPEG_IMAGE_SCALE_0;
     esp_jpeg_image_cfg_t icfg = {
@@ -58,12 +89,7 @@ static void decode_and_show(uint8_t *frame, size_t flen)
     };
     esp_jpeg_image_output_t info = {0};
     if (esp_jpeg_get_image_info(&icfg, &info) != ESP_OK || info.width == 0) {
-        ESP_LOGW(TAG, "get_image_info failed for %u bytes", (unsigned)flen);
         return;
-    }
-    static uint32_t info_logs = 0;
-    if ((info_logs++ % 10) == 0) {
-        ESP_LOGI(TAG, "jpeg %ux%u (%u bytes)", info.width, info.height, (unsigned)flen);
     }
     int sw = info.width, sh = info.height;
     while (scale < JPEG_IMAGE_SCALE_1_8 && (sw > CAM_MAX_W || sh > CAM_MAX_H)) {
@@ -90,14 +116,61 @@ static void decode_and_show(uint8_t *frame, size_t flen)
         ui_set_camera_frame(out.width, out.height, s_out[s_front],
                             (uint32_t)out.width * 2);
         s_frame_ok = true;
-        static uint32_t frames = 0;
-        if ((++frames % 20) == 0) {
-            ESP_LOGI(TAG, "%lu frames shown (%dx%d)", (unsigned long)frames,
-                     out.width, out.height);
-        }
-    } else {
-        ESP_LOGW(TAG, "jpeg decode failed (%ux%u, %u bytes)", info.width,
-                 info.height, (unsigned)flen);
+    }
+}
+
+/* --------------------------- hardware decode ----------------------------- */
+static bool hw_decode(uint8_t *frame, size_t flen)
+{
+    if (!s_hw_ok) {
+        return false;
+    }
+
+    jpeg_decode_picture_info_t info = {0};
+    if (jpeg_decoder_get_info(frame, (uint32_t)flen, &info) != ESP_OK ||
+        info.width == 0 || info.height == 0) {
+        return false;
+    }
+
+    uint32_t pw = (info.width + 15) & ~15u;
+    uint32_t ph = (info.height + 15) & ~15u;
+    if (pw * ph * 2 > HW_RAW_BYTES) {
+        return false;
+    }
+
+    jpeg_decode_cfg_t dcfg = {
+        .output_format = JPEG_DECODE_OUT_FORMAT_RGB565,
+        .rgb_order = JPEG_DEC_RGB_ELEMENT_ORDER_BGR, /* little-endian bytes */
+        .conv_std = JPEG_YUV_RGB_CONV_STD_BT601,
+    };
+
+    int back = 1 - s_front;
+    uint32_t out_size = 0;
+    esp_err_t err = jpeg_decoder_process(s_hw, &dcfg, frame, (uint32_t)flen,
+                                         s_hw_raw, HW_RAW_BYTES, &out_size);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "hw decode failed (%s)", esp_err_to_name(err));
+        return false;
+    }
+
+    /* strip the 16-px padding so the image is tightly packed for LVGL */
+    uint32_t src_stride = pw * 2;
+    uint32_t dst_stride = info.width * 2;
+    uint8_t *dst = s_out[back];
+    for (uint32_t y = 0; y < info.height; y++) {
+        memcpy(dst + y * dst_stride, s_hw_raw + y * src_stride, dst_stride);
+    }
+
+    s_front = back;
+    ui_set_camera_frame(info.width, info.height, s_out[s_front], dst_stride);
+    s_frame_ok = true;
+    return true;
+}
+
+static void decode_and_show(uint8_t *frame, size_t flen)
+{
+    if (!hw_decode(frame, flen)) {
+        software_decode(frame, flen);
     }
 }
 
@@ -156,12 +229,6 @@ static void cam_stream(esp_http_client_handle_t client)
     free(chunk);
 }
 
-static void build_mjpeg_url(char *buf, size_t len)
-{
-    snprintf(buf, len, "http://%s:%d/%s/stream.mjpeg?src=%s",
-             FRIGATE_HOST, FRIGATE_PORT, GO2RTC_PATH_PREFIX, MJPEG_STREAM_NAME);
-}
-
 /* ------------------------------ snapshot -------------------------------- */
 typedef struct {
     uint8_t *buf;
@@ -208,10 +275,6 @@ static void cam_snapshot(void)
     int status = esp_http_client_get_status_code(client);
 
     if (err == ESP_OK && status == 200 && ctx.len > 0) {
-        static uint32_t snaps = 0;
-        if ((snaps++ % 10) == 0) {
-            ESP_LOGI(TAG, "snapshot fetched: %u bytes", (unsigned)ctx.len);
-        }
         decode_and_show(s_frame, ctx.len);
     } else if (err != ESP_OK) {
         ESP_LOGW(TAG, "snapshot request failed: %s", esp_err_to_name(err));
@@ -227,9 +290,7 @@ static void cam_task(void *arg)
 {
     (void)arg;
 
-    char mjpeg_url[256];
-    build_mjpeg_url(mjpeg_url, sizeof(mjpeg_url));
-    ESP_LOGI(TAG, "mjpeg url: %s", mjpeg_url);
+    build_mjpeg_urls();
 
     while (bsp_wifi_get_state() != WIFI_CONNECTED) {
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -242,7 +303,7 @@ static void cam_task(void *arg)
             s_frame_ok = false;
 
             esp_http_client_config_t cfg = {
-                .url = mjpeg_url,
+                .url = s_mjpeg_url[s_active_url],
                 .method = HTTP_METHOD_GET,
                 .timeout_ms = 5000,
                 .buffer_size = 2048,
@@ -266,9 +327,13 @@ static void cam_task(void *arg)
             }
 
             if (!s_frame_ok) {
-                ESP_LOGW(TAG, "no MJPEG frames (go2rtc transcode not configured?), using snapshots");
-                s_mode = CAM_MODE_SNAPSHOT;
-                ui_set_cam_status(false);
+                s_active_url++;
+                if (s_active_url >= s_mjpeg_url_count) {
+                    s_active_url = 0;
+                    ESP_LOGW(TAG, "no MJPEG frames from any stream, using snapshots");
+                    s_mode = CAM_MODE_SNAPSHOT;
+                    ui_set_cam_status(false);
+                }
             }
             vTaskDelay(pdMS_TO_TICKS(1500));
         } else {
@@ -276,7 +341,8 @@ static void cam_task(void *arg)
             int64_t now = esp_timer_get_time() / 1000;
             if (now - last_mjpeg_try >= MJPEG_RETRY_INTERVAL_MS) {
                 last_mjpeg_try = now;
-                s_mode = CAM_MODE_MJPEG;   /* give live feed another chance */
+                s_active_url = 0;      /* re-probe all candidates */
+                s_mode = CAM_MODE_MJPEG;
                 continue;
             }
             cam_snapshot();
@@ -291,16 +357,28 @@ void camera_start(void)
     s_frame = heap_caps_malloc(FRAME_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_out[0] = heap_caps_malloc(OUTBUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_out[1] = heap_caps_malloc(OUTBUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_frame || !s_out[0] || !s_out[1]) {
+    s_jpeg_work = heap_caps_malloc(JPEG_WORK_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!s_frame || !s_out[0] || !s_out[1] || !s_jpeg_work) {
         ESP_LOGE(TAG, "failed to allocate camera buffers");
         return;
     }
-    memset(s_out[0], 0, OUTBUF_BYTES);
-    memset(s_out[1], 0, OUTBUF_BYTES);
-    s_jpeg_work = heap_caps_malloc(JPEG_WORK_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s_jpeg_work) {
-        ESP_LOGE(TAG, "failed to allocate jpeg work buffer");
-        return;
+
+    /* hardware JPEG decode engine */
+    jpeg_decode_engine_cfg_t eng = { .intr_priority = 0, .timeout_ms = 200 };
+    if (jpeg_new_decoder_engine(&eng, &s_hw) == ESP_OK) {
+        jpeg_decode_memory_alloc_cfg_t mcfg = {
+            .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER,
+        };
+        size_t allocated = 0;
+        s_hw_raw = jpeg_alloc_decoder_mem(HW_RAW_BYTES, &mcfg, &allocated);
+        if (s_hw_raw && allocated >= HW_RAW_BYTES) {
+            s_hw_ok = true;
+            ESP_LOGI(TAG, "hardware JPEG decoder ready (%u B raw)", (unsigned)allocated);
+        } else {
+            ESP_LOGW(TAG, "hw decoder mem alloc failed, using software decode");
+        }
+    } else {
+        ESP_LOGW(TAG, "hw decoder engine failed, using software decode");
     }
 
     xTaskCreatePinnedToCore(cam_task, "cam", 8192, NULL, 6, NULL, 0);
