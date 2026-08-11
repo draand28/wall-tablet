@@ -54,6 +54,25 @@ static uint8_t *s_jpeg_work;
 static cam_mode_t s_mode = CAM_MODE_MJPEG;
 static volatile bool s_frame_ok = false;
 
+/* frame-rate diagnostics */
+static uint32_t s_frames = 0;
+static int64_t s_last_fps_log = 0;
+
+static void note_frame(void)
+{
+    s_frames++;
+    int64_t now = esp_timer_get_time() / 1000;
+    if (s_last_fps_log == 0) {
+        s_last_fps_log = now;
+        return;
+    }
+    if (now - s_last_fps_log >= 5000) {
+        ESP_LOGI(TAG, "~%u fps", (unsigned)((s_frames * 1000) / (now - s_last_fps_log)));
+        s_frames = 0;
+        s_last_fps_log = now;
+    }
+}
+
 /* Candidate go2rtc MJPEG stream names, probed in order until one yields
  * frames: configured name, camera name, camera name + "_mjpeg". */
 static char s_mjpeg_url[3][192];
@@ -164,6 +183,7 @@ static bool hw_decode(uint8_t *frame, size_t flen)
     s_front = back;
     ui_set_camera_frame(info.width, info.height, s_out[s_front], dst_stride);
     s_frame_ok = true;
+    note_frame();
     return true;
 }
 
