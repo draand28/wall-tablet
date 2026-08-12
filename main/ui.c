@@ -40,6 +40,7 @@ static lv_obj_t *update_btn = NULL;
 static lv_obj_t *update_btn_lbl = NULL;
 
 static lv_obj_t *cam_view, *cam_img, *cam_live, *cam_status;
+static lv_obj_t *cam_fps_lbl;
 static lv_obj_t *clock_lbl, *date_lbl, *wifi_lbl;
 static lv_obj_t *more_overlay, *more_list;
 
@@ -244,6 +245,12 @@ void ui_init(void)
     lv_obj_set_style_text_color(cam_status, lv_color_hex(0xE05B5B), 0);
     lv_obj_align(cam_status, LV_ALIGN_BOTTOM_LEFT, 12, -8);
 
+    cam_fps_lbl = lv_label_create(left);
+    lv_label_set_text(cam_fps_lbl, "");
+    lv_obj_set_style_text_font(cam_fps_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(cam_fps_lbl, lv_color_hex(C_DIM), 0);
+    lv_obj_align(cam_fps_lbl, LV_ALIGN_BOTTOM_RIGHT, -12, -8);
+
     /* ---- right: HA panel ---- */
     lv_obj_t *right = lv_obj_create(lv_scr_act());
     lv_obj_set_pos(right, PANEL_R_X, 0);
@@ -322,43 +329,22 @@ void ui_set_ota_status(const char *text)
 void ui_set_camera_frame(uint16_t w, uint16_t h, const uint8_t *rgb565, uint32_t stride)
 {
     (void)stride;
-    int64_t t0 = esp_timer_get_time();
     if (!LOCK()) return;
-    int64_t t1 = esp_timer_get_time();
 
-    static uint16_t last_w = 0, last_h = 0;
-    if (w != last_w || h != last_h) {
-        last_w = w;
-        last_h = h;
-        /* resolution changed: refresh size + re-center (no zoom = fast blit) */
-        cam_dsc.header.w = w;
-        cam_dsc.header.h = h;
-        cam_dsc.data_size = (uint32_t)w * h * 2;
-        cam_dsc.data = rgb565;
-        lv_img_set_src(cam_img, &cam_dsc);
-        lv_img_set_zoom(cam_img, 256);
-        lv_obj_center(cam_img);
-    } else {
-        /* same resolution: just point at the new frame data */
-        cam_dsc.data = rgb565;
-        lv_img_set_src(cam_img, &cam_dsc);
-    }
+    cam_dsc.header.w = w;
+    cam_dsc.header.h = h;
+    cam_dsc.data_size = (uint32_t)w * h * 2;
+    cam_dsc.data = rgb565;
 
+    lv_img_set_src(cam_img, &cam_dsc);
+    lv_img_set_zoom(cam_img, 256); /* 1:1 blit */
+    /* left-aligned so the decoder's 16-px pad (on the right) is clipped */
+    int y = (CAM_VIEW_H - h) / 2;
+    if (y < 0) y = 0;
+    lv_obj_set_pos(cam_img, 0, y);
     lv_obj_invalidate(cam_img);
-    UNLOCK();
-    int64_t t2 = esp_timer_get_time();
 
-    static int64_t last_log = 0;
-    static uint32_t cnt = 0;
-    static int64_t wait_sum = 0, work_sum = 0;
-    cnt++;
-    wait_sum += t1 - t0;
-    work_sum += t2 - t1;
-    if (esp_timer_get_time() - last_log > 10000000) {
-        ESP_LOGI(TAG, "frame: lock_wait %lld us, work %lld us",
-                 (long long)(wait_sum / cnt), (long long)(work_sum / cnt));
-        cnt = 0; wait_sum = 0; work_sum = 0; last_log = esp_timer_get_time();
-    }
+    UNLOCK();
 }
 
 void ui_set_cam_status(bool online)
@@ -367,6 +353,13 @@ void ui_set_cam_status(bool online)
     lv_label_set_text(cam_status, online ? "camera: live" : "camera: offline");
     lv_obj_set_style_text_color(cam_status, lv_color_hex(online ? C_ON : 0xE05B5B), 0);
     lv_obj_set_style_text_color(cam_live, lv_color_hex(online ? C_ON : 0x555F69), 0);
+    UNLOCK();
+}
+
+void ui_set_cam_fps(const char *text)
+{
+    if (!LOCK()) return;
+    lv_label_set_text(cam_fps_lbl, text);
     UNLOCK();
 }
 

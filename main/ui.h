@@ -9,6 +9,7 @@ void ui_init(void);
 
 void ui_set_camera_frame(uint16_t w, uint16_t h, const uint8_t *rgb565, uint32_t stride_bytes);
 void ui_set_cam_status(bool online);
+void ui_set_cam_fps(const char *text);
 void ui_set_quick_state(int idx, bool on);
 void ui_set_extra_state(int idx, bool on);
 void ui_set_sensor_value(int idx, const char *text);

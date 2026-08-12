@@ -16,6 +16,13 @@ static char s_buf[LOG_BUF_SIZE];
 static size_t s_len = 0;
 static SemaphoreHandle_t s_mutex = NULL;
 
+static void (*s_ota_trigger)(void) = NULL;
+
+void log_server_set_ota_trigger(void (*cb)(void))
+{
+    s_ota_trigger = cb;
+}
+
 static void ring_write(const char *data, size_t len)
 {
     if (s_len + len > LOG_BUF_SIZE) {
@@ -99,6 +106,20 @@ static esp_err_t handle_log(httpd_req_t *req)
     return httpd_resp_send_chunk(req, NULL, 0);
 }
 
+static esp_err_t handle_ota(httpd_req_t *req)
+{
+    if (req->method == HTTP_POST) {
+        httpd_resp_set_type(req, "text/plain");
+        if (s_ota_trigger) {
+            s_ota_trigger();
+            return httpd_resp_sendstr(req, "OTA triggered\n");
+        }
+        return httpd_resp_sendstr(req, "no ota handler\n");
+    }
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, "POST to /ota to update\n");
+}
+
 void log_server_start(void)
 {
     s_mutex = xSemaphoreCreateMutex();
@@ -116,8 +137,10 @@ void log_server_start(void)
 
     httpd_uri_t root = { .uri = "/", .method = HTTP_GET, .handler = handle_root, .user_ctx = NULL };
     httpd_uri_t log  = { .uri = "/log", .method = HTTP_GET, .handler = handle_log, .user_ctx = NULL };
+    httpd_uri_t ota  = { .uri = "/ota", .method = HTTP_POST, .handler = handle_ota, .user_ctx = NULL };
     httpd_register_uri_handler(srv, &root);
     httpd_register_uri_handler(srv, &log);
+    httpd_register_uri_handler(srv, &ota);
 
-    ESP_LOGI(TAG, "status/log server on :80");
+    ESP_LOGI(TAG, "status/log/ota server on :80");
 }

@@ -40,10 +40,11 @@ static size_t s_frame_len = 0;
 static bool s_soi_seen = false;
 static bool s_prev_ff = false;
 
-static uint8_t *s_out[2];     /* tightly packed RGB565 display buffers */
+static uint8_t *s_out[2];     /* tightly packed RGB565 display buffers (software path) */
 static int s_front = 0;
 
-static uint8_t *s_hw_raw;                 /* hardware decoder output */
+static uint8_t *s_hw_raw[2];               /* hardware decoder outputs (padded) */
+static int s_hw_front = 0;
 static jpeg_decoder_handle_t s_hw = NULL; /* hardware JPEG decoder engine */
 static bool s_hw_ok = false;
 
@@ -66,8 +67,11 @@ static void note_frame(void)
         s_last_fps_log = now;
         return;
     }
-    if (now - s_last_fps_log >= 5000) {
-        ESP_LOGI(TAG, "~%u fps", (unsigned)((s_frames * 1000) / (now - s_last_fps_log)));
+    if (now - s_last_fps_log >= 1000) {
+        unsigned fps = (unsigned)((s_frames * 1000) / (now - s_last_fps_log));
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%u fps", fps);
+        ui_set_cam_fps(buf);
         s_frames = 0;
         s_last_fps_log = now;
     }
@@ -164,37 +168,36 @@ static bool hw_decode(uint8_t *frame, size_t flen)
         .conv_std = JPEG_YUV_RGB_CONV_STD_BT601,
     };
 
-    int back = 1 - s_front;
+    int back = 1 - s_hw_front;
     uint32_t out_size = 0;
     esp_err_t err = jpeg_decoder_process(s_hw, &dcfg, frame, (uint32_t)flen,
-                                         s_hw_raw, HW_RAW_BYTES, &out_size);
+                                         s_hw_raw[back], HW_RAW_BYTES, &out_size);
+    int64_t t_proc = esp_timer_get_time() - t0;
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "hw decode failed (%s)", esp_err_to_name(err));
         return false;
     }
 
-    /* strip the 16-px padding so the image is tightly packed for LVGL */
-    uint32_t src_stride = pw * 2;
-    uint32_t dst_stride = info.width * 2;
-    uint8_t *dst = s_out[back];
-    for (uint32_t y = 0; y < info.height; y++) {
-        memcpy(dst + y * dst_stride, s_hw_raw + y * src_stride, dst_stride);
-    }
-
-    s_front = back;
-    ui_set_camera_frame(info.width, info.height, s_out[s_front], dst_stride);
+    /* display the decoder's padded buffer directly: the 16-px right pad is
+     * clipped by the viewport, and we only draw info.height rows, so the
+     * bottom pad never shows. No pixel copy needed. */
+    s_hw_front = back;
+    ui_set_camera_frame((uint16_t)pw, info.height, s_hw_raw[s_hw_front],
+                        pw * 2);
     s_frame_ok = true;
     note_frame();
 
     static int64_t last_log = 0;
     static uint32_t cnt = 0;
-    static int64_t sum = 0;
+    static int64_t s_proc = 0, s_all = 0;
     cnt++;
-    sum += esp_timer_get_time() - t0;
-    if (esp_timer_get_time() - last_log > 15000000) {
-        ESP_LOGI(TAG, "decode cycle avg %lld us (src %ux%u)",
-                 (long long)(sum / cnt), (unsigned)info.width, (unsigned)info.height);
-        cnt = 0; sum = 0; last_log = esp_timer_get_time();
+    s_proc += t_proc;
+    s_all += esp_timer_get_time() - t0;
+    if (esp_timer_get_time() - last_log > 10000000) {
+        ESP_LOGI(TAG, "hw: proc %lld us, all %lld us (src %ux%u)",
+                 (long long)(s_proc / cnt), (long long)(s_all / cnt),
+                 (unsigned)info.width, (unsigned)info.height);
+        cnt = 0; s_proc = 0; s_all = 0; last_log = esp_timer_get_time();
     }
     return true;
 }
@@ -249,7 +252,7 @@ static void consume(const uint8_t *data, size_t len)
  * reader keeps the socket drained (no backlog / no replay of old frames).
  * The decoder only ever renders the most recent complete frame, at most
  * every DECODE_INTERVAL_MS. Frames in between are dropped. */
-#define DECODE_INTERVAL_MS 40
+#define DECODE_INTERVAL_MS 5
 
 static SemaphoreHandle_t s_latest_mux = NULL;
 static int64_t s_last_decode_ms = 0;
@@ -310,13 +313,24 @@ static void cam_stream(esp_http_client_handle_t client)
         return;
     }
 
+    size_t total = 0;
+    int64_t t0 = esp_timer_get_time() / 1000;
+
     while (1) {
         int r = esp_http_client_read(client, (char *)chunk, 8192);
         if (r <= 0) {
             ESP_LOGW(TAG, "stream read ended (%d)", r);
             break;
         }
+        total += (size_t)r;
         consume(chunk, (size_t)r);
+
+        int64_t now = esp_timer_get_time() / 1000;
+        if (now - t0 >= 10000) {
+            ESP_LOGI(TAG, "recv %u KB/s", (unsigned)(total / (size_t)(now - t0)));
+            total = 0;
+            t0 = now;
+        }
     }
 
     free(chunk);
@@ -460,14 +474,16 @@ void camera_start(void)
     /* hardware JPEG decode engine */
     jpeg_decode_engine_cfg_t eng = { .intr_priority = 0, .timeout_ms = 200 };
     if (jpeg_new_decoder_engine(&eng, &s_hw) == ESP_OK) {
+        /* cache-aligned SPIRAM output (the driver's DMA requires alignment) */
         jpeg_decode_memory_alloc_cfg_t mcfg = {
             .buffer_direction = JPEG_DEC_ALLOC_OUTPUT_BUFFER,
         };
         size_t allocated = 0;
-        s_hw_raw = jpeg_alloc_decoder_mem(HW_RAW_BYTES, &mcfg, &allocated);
-        if (s_hw_raw && allocated >= HW_RAW_BYTES) {
+        s_hw_raw[0] = jpeg_alloc_decoder_mem(HW_RAW_BYTES, &mcfg, &allocated);
+        s_hw_raw[1] = jpeg_alloc_decoder_mem(HW_RAW_BYTES, &mcfg, &allocated);
+        if (s_hw_raw[0] && s_hw_raw[1] && allocated >= HW_RAW_BYTES) {
             s_hw_ok = true;
-            ESP_LOGI(TAG, "hardware JPEG decoder ready (%u B raw)", (unsigned)allocated);
+            ESP_LOGI(TAG, "hardware JPEG decoder ready (2x%u B raw)", (unsigned)allocated);
         } else {
             ESP_LOGW(TAG, "hw decoder mem alloc failed, using software decode");
         }

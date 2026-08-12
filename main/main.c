@@ -175,6 +175,7 @@ void app_main(void)
     sntp_init_net();
 
     esp_log_set_vprintf(log_server_vprintf);
+    log_server_set_ota_trigger(on_update);
     log_server_start();
 
     ha_init();
