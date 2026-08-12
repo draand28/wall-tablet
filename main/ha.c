@@ -96,7 +96,7 @@ static esp_err_t http_request(const char *path, const char *method,
     int status = esp_http_client_get_status_code(client);
 
     if (err == ESP_OK && status >= 400) {
-        ESP_LOGW(TAG, "HTTP %d for %s: %s", status, path, resp ? resp : "");
+        ESP_LOGD(TAG, "HTTP %d for %s: %s", status, path, resp ? resp : "");
         err = ESP_FAIL;
     }
     if (err != ESP_OK) {

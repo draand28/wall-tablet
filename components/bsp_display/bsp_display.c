@@ -1,5 +1,6 @@
 /*————————————————————————————————————————Header file declaration————————————————————————————————————————*/
 #include "bsp_display.h"
+#include "ppa_camera.h"
 /*——————————————————————————————————————Header file declaration end——————————————————————————————————————*/
 
 /*——————————————————————————————————————————Variable declaration—————————————————————————————————————————*/
@@ -324,6 +325,7 @@ static esp_err_t lvgl_init()
         err = ESP_FAIL;
         DISPLAY_ERROR("LVGL dsi port add fail");
     }
+    ppa_camera_init(my_lvgl_disp);
 #ifdef CONFIG_BSP_TOUCH_ENABLED
     const lvgl_port_touch_cfg_t touch_cfg = {
         .disp = my_lvgl_disp,
