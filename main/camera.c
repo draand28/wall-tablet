@@ -245,24 +245,20 @@ static void consume(const uint8_t *data, size_t len)
 }
 
 /* ---- decode throttling: decode the newest frame, drop stale ones ----
- * The stream can arrive faster than the decoder can run; if we decoded every
- * frame the network buffer would fill with old frames and the picture would
- * lag by many seconds. Instead we decode at most every DECODE_INTERVAL_MS and
- * always keep the most recent complete frame for the next decode slot. */
+ * Parsing runs at socket speed so the network buffer never backs up; the
+ * decoder only runs on the most recent complete frame, at most every
+ * DECODE_INTERVAL_MS. Frames in between are dropped, keeping the picture
+ * real-time instead of slowly replaying a backlog. */
 #define DECODE_INTERVAL_MS 40
 
 static int64_t s_last_decode_ms = 0;
 static uint8_t *s_latest = NULL;
 static size_t s_latest_len = 0;
 
+/* always keep the newest complete frame (drop whatever was pending) */
 static void maybe_decode(uint8_t *frame, size_t flen)
 {
-    int64_t now = esp_timer_get_time() / 1000;
-    if (now - s_last_decode_ms >= DECODE_INTERVAL_MS) {
-        s_last_decode_ms = now;
-        s_latest_len = 0;
-        decode_and_show(frame, flen);
-    } else if (s_latest && flen <= FRAME_MAX_BYTES) {
+    if (s_latest && flen <= FRAME_MAX_BYTES) {
         memcpy(s_latest, frame, flen);
         s_latest_len = flen;
     }
