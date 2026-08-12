@@ -245,12 +245,13 @@ static void consume(const uint8_t *data, size_t len)
 }
 
 /* ---- decode throttling: decode the newest frame, drop stale ones ----
- * Parsing runs at socket speed so the network buffer never backs up; the
- * decoder only runs on the most recent complete frame, at most every
- * DECODE_INTERVAL_MS. Frames in between are dropped, keeping the picture
- * real-time instead of slowly replaying a backlog. */
+ * A dedicated decode task runs independently of the network reader, so the
+ * reader keeps the socket drained (no backlog / no replay of old frames).
+ * The decoder only ever renders the most recent complete frame, at most
+ * every DECODE_INTERVAL_MS. Frames in between are dropped. */
 #define DECODE_INTERVAL_MS 40
 
+static SemaphoreHandle_t s_latest_mux = NULL;
 static int64_t s_last_decode_ms = 0;
 static uint8_t *s_latest = NULL;
 static size_t s_latest_len = 0;
@@ -259,20 +260,45 @@ static size_t s_latest_len = 0;
 static void maybe_decode(uint8_t *frame, size_t flen)
 {
     if (s_latest && flen <= FRAME_MAX_BYTES) {
-        memcpy(s_latest, frame, flen);
-        s_latest_len = flen;
+        if (xSemaphoreTake(s_latest_mux, portMAX_DELAY)) {
+            memcpy(s_latest, frame, flen);
+            s_latest_len = flen;
+            xSemaphoreGive(s_latest_mux);
+        }
     }
 }
 
-static void maybe_flush_latest(void)
+/* independent decode task: renders the newest frame at most every 40 ms */
+static void decode_task(void *arg)
 {
-    if (s_latest_len) {
-        int64_t now = esp_timer_get_time() / 1000;
-        if (now - s_last_decode_ms >= DECODE_INTERVAL_MS) {
-            s_last_decode_ms = now;
-            size_t flen = s_latest_len;
-            s_latest_len = 0;
-            decode_and_show(s_latest, flen);
+    (void)arg;
+    uint8_t *tmp = heap_caps_malloc(FRAME_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!tmp) {
+        vTaskDelete(NULL);
+        return;
+    }
+
+    while (1) {
+        size_t flen = 0;
+        if (xSemaphoreTake(s_latest_mux, portMAX_DELAY)) {
+            if (s_latest_len) {
+                flen = s_latest_len;
+                s_latest_len = 0;
+                memcpy(tmp, s_latest, flen);
+            }
+            xSemaphoreGive(s_latest_mux);
+        }
+
+        if (flen) {
+            int64_t now = esp_timer_get_time() / 1000;
+            int64_t elapsed = now - s_last_decode_ms;
+            if (elapsed < DECODE_INTERVAL_MS) {
+                vTaskDelay(pdMS_TO_TICKS((uint32_t)(DECODE_INTERVAL_MS - elapsed)));
+            }
+            s_last_decode_ms = esp_timer_get_time() / 1000;
+            decode_and_show(tmp, flen);
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
 }
@@ -291,7 +317,6 @@ static void cam_stream(esp_http_client_handle_t client)
             break;
         }
         consume(chunk, (size_t)r);
-        maybe_flush_latest();
     }
 
     free(chunk);
@@ -450,5 +475,12 @@ void camera_start(void)
         ESP_LOGW(TAG, "hw decoder engine failed, using software decode");
     }
 
+    s_latest_mux = xSemaphoreCreateMutex();
+    if (!s_latest_mux) {
+        ESP_LOGE(TAG, "failed to create latest-frame mutex");
+        return;
+    }
+
     xTaskCreatePinnedToCore(cam_task, "cam", 8192, NULL, 6, NULL, 1);
+    xTaskCreatePinnedToCore(decode_task, "camdec", 8192, NULL, 5, NULL, 1);
 }
