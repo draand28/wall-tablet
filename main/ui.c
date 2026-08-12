@@ -4,6 +4,8 @@
 
 #include "esp_log.h"
 #include "esp_lvgl_port.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include "lvgl.h"
 
 #include "config.h"
@@ -16,6 +18,9 @@
 #define PANEL_L_W 690        /* left camera panel width (left ~2/3) */
 #define PANEL_R_X 700        /* right panel start x */
 #define PANEL_R_W (SCR_W - PANEL_R_X - 10)
+
+#define CAM_VIEW_W (PANEL_L_W)
+#define CAM_VIEW_H (SCR_H - 38)
 
 /* palette */
 #define C_BG        0x0E1216
@@ -39,10 +44,6 @@ static lv_obj_t *clock_lbl, *date_lbl, *wifi_lbl;
 static lv_obj_t *more_overlay, *more_list;
 
 static lv_img_dsc_t cam_dsc;
-static uint8_t *s_disp = NULL;       /* viewport-sized RGB565 buffer */
-static uint16_t *s_sx = NULL;        /* x sampling table for resize */
-static uint16_t s_sw = 0, s_sh = 0;  /* current source size */
-static uint16_t s_tw = 0, s_th = 0;  /* current display (target) size */
 
 static lv_obj_t *quick_btns[QUICK_BTNS_COUNT];
 static lv_obj_t *extra_btns[EXTRA_BTNS_COUNT];
@@ -274,7 +275,7 @@ void ui_init(void)
 
     update_btn = make_btn(right, "UPDATE", PANEL_R_W - 24, 40,
                           update_evt, NULL);
-    lv_obj_align(update_btn, LV_ALIGN_BOTTOM_LEFT, 12, -108);
+    lv_obj_align(update_btn, LV_ALIGN_BOTTOM_LEFT, 12, -124);
     update_btn_lbl = lv_obj_get_child(update_btn, 0);
 
     lv_obj_t *more_btn = make_btn(right, "ALL LIGHTS", PANEL_R_W - 24, 56,
@@ -318,76 +319,46 @@ void ui_set_ota_status(const char *text)
     UNLOCK();
 }
 
-/* aspect-fit the source frame into the camera viewport (no LVGL zoom, which
- * is too slow at 30 fps) */
-static void cam_setup_scale(uint16_t w, uint16_t h)
-{
-    s_sw = w;
-    s_sh = h;
-
-    int vw = lv_obj_get_width(cam_view);
-    int vh = lv_obj_get_height(cam_view);
-    if (vw < 1) vw = 1;
-    if (vh < 1) vh = 1;
-
-    double s = (double)vw / (double)w;
-    double sy = (double)vh / (double)h;
-    if (sy < s) s = sy;
-    if (s < 0.05) s = 0.05;
-
-    s_tw = (uint16_t)(w * s);
-    s_th = (uint16_t)(h * s);
-    if (s_tw < 1) s_tw = 1;
-    if (s_th < 1) s_th = 1;
-
-    for (uint16_t x = 0; x < s_tw; x++) {
-        s_sx[x] = (uint16_t)(((uint32_t)x * w) / s_tw);
-    }
-}
-
-static void cam_resize(const uint8_t *src, uint8_t *dst)
-{
-    if (s_tw == s_sw && s_th == s_sh) {
-        memcpy(dst, src, (size_t)s_tw * s_th * 2);
-        return;
-    }
-    uint32_t sstride = (uint32_t)s_sw * 2;
-    uint32_t dstride = (uint32_t)s_tw * 2;
-    for (uint16_t y = 0; y < s_th; y++) {
-        uint16_t sy = (uint16_t)(((uint32_t)y * s_sh) / s_th);
-        const uint8_t *srow = src + (uint32_t)sy * sstride;
-        uint8_t *drow = dst + (uint32_t)y * dstride;
-        uint16_t *spx = (uint16_t *)srow;
-        uint16_t *dpx = (uint16_t *)drow;
-        for (uint16_t x = 0; x < s_tw; x++) {
-            dpx[x] = spx[s_sx[x]];
-        }
-    }
-}
-
 void ui_set_camera_frame(uint16_t w, uint16_t h, const uint8_t *rgb565, uint32_t stride)
 {
     (void)stride;
+    int64_t t0 = esp_timer_get_time();
     if (!LOCK()) return;
+    int64_t t1 = esp_timer_get_time();
 
-    if (s_disp && (w != s_sw || h != s_sh)) {
-        cam_setup_scale(w, h);
-    }
-    if (s_disp) {
-        cam_resize(rgb565, s_disp);
-
-        cam_dsc.header.w = s_tw;
-        cam_dsc.header.h = s_th;
-        cam_dsc.data_size = (uint32_t)s_tw * s_th * 2;
-        cam_dsc.data = s_disp;
-
+    static uint16_t last_w = 0, last_h = 0;
+    if (w != last_w || h != last_h) {
+        last_w = w;
+        last_h = h;
+        /* resolution changed: refresh size + re-center (no zoom = fast blit) */
+        cam_dsc.header.w = w;
+        cam_dsc.header.h = h;
+        cam_dsc.data_size = (uint32_t)w * h * 2;
+        cam_dsc.data = rgb565;
         lv_img_set_src(cam_img, &cam_dsc);
-        lv_img_set_zoom(cam_img, 256); /* 1:1 blit */
+        lv_img_set_zoom(cam_img, 256);
         lv_obj_center(cam_img);
-        lv_obj_invalidate(cam_img);
+    } else {
+        /* same resolution: just point at the new frame data */
+        cam_dsc.data = rgb565;
+        lv_img_set_src(cam_img, &cam_dsc);
     }
 
+    lv_obj_invalidate(cam_img);
     UNLOCK();
+    int64_t t2 = esp_timer_get_time();
+
+    static int64_t last_log = 0;
+    static uint32_t cnt = 0;
+    static int64_t wait_sum = 0, work_sum = 0;
+    cnt++;
+    wait_sum += t1 - t0;
+    work_sum += t2 - t1;
+    if (esp_timer_get_time() - last_log > 10000000) {
+        ESP_LOGI(TAG, "frame: lock_wait %lld us, work %lld us",
+                 (long long)(wait_sum / cnt), (long long)(work_sum / cnt));
+        cnt = 0; wait_sum = 0; work_sum = 0; last_log = esp_timer_get_time();
+    }
 }
 
 void ui_set_cam_status(bool online)

@@ -141,6 +141,7 @@ static void software_decode(uint8_t *frame, size_t flen)
 /* --------------------------- hardware decode ----------------------------- */
 static bool hw_decode(uint8_t *frame, size_t flen)
 {
+    int64_t t0 = esp_timer_get_time();
     if (!s_hw_ok) {
         return false;
     }
@@ -184,6 +185,17 @@ static bool hw_decode(uint8_t *frame, size_t flen)
     ui_set_camera_frame(info.width, info.height, s_out[s_front], dst_stride);
     s_frame_ok = true;
     note_frame();
+
+    static int64_t last_log = 0;
+    static uint32_t cnt = 0;
+    static int64_t sum = 0;
+    cnt++;
+    sum += esp_timer_get_time() - t0;
+    if (esp_timer_get_time() - last_log > 15000000) {
+        ESP_LOGI(TAG, "decode cycle avg %lld us (src %ux%u)",
+                 (long long)(sum / cnt), (unsigned)info.width, (unsigned)info.height);
+        cnt = 0; sum = 0; last_log = esp_timer_get_time();
+    }
     return true;
 }
 
@@ -401,5 +413,5 @@ void camera_start(void)
         ESP_LOGW(TAG, "hw decoder engine failed, using software decode");
     }
 
-    xTaskCreatePinnedToCore(cam_task, "cam", 8192, NULL, 6, NULL, 0);
+    xTaskCreatePinnedToCore(cam_task, "cam", 8192, NULL, 6, NULL, 1);
 }
