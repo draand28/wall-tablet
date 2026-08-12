@@ -11,22 +11,12 @@
 
 static ppa_client_handle_t s_ppa = NULL;
 static bool s_ppa_ok = false;
-static uint32_t s_hits = 0;
-static uint32_t s_falls = 0;
-static int64_t s_last_log = 0;
+static const uint8_t *s_cam_bufs[2] = { NULL, NULL };
 
-static void ppa_log_stats(void)
+void ppa_camera_set_buffers(const uint8_t *a, const uint8_t *b)
 {
-    if (s_ppa_ok && s_hits + s_falls > 0) {
-        int64_t now = esp_timer_get_time() / 1000;
-        if (now - s_last_log > 10000) {
-            s_last_log = now;
-            ESP_LOGI(TAG, "ppa blits: %u, sw fallbacks: %u",
-                     (unsigned)s_hits, (unsigned)s_falls);
-            s_hits = 0;
-            s_falls = 0;
-        }
-    }
+    s_cam_bufs[0] = a;
+    s_cam_bufs[1] = b;
 }
 
 static void ppa_draw_img_decoded(lv_draw_ctx_t *draw_ctx,
@@ -34,10 +24,15 @@ static void ppa_draw_img_decoded(lv_draw_ctx_t *draw_ctx,
                                  const lv_area_t *coords, const uint8_t *map_p,
                                  lv_img_cf_t color_format)
 {
-    /* fast path: plain 1:1 RGB565 copy, no rotation/zoom/recolor/alpha */
-    if (s_ppa_ok && color_format == LV_IMG_CF_TRUE_COLOR &&
-        dsc->angle == 0 && dsc->zoom == LV_IMG_ZOOM_NONE &&
-        dsc->opa == LV_OPA_COVER && dsc->recolor_opa == LV_OPA_TRANSP) {
+    /* only accelerate the camera frame buffer blits */
+    if (!s_ppa_ok || (map_p != s_cam_bufs[0] && map_p != s_cam_bufs[1])) {
+        lv_draw_sw_img_decoded(draw_ctx, dsc, coords, map_p, color_format);
+        return;
+    }
+
+    if (color_format == LV_IMG_CF_TRUE_COLOR && dsc->angle == 0 &&
+        dsc->zoom == LV_IMG_ZOOM_NONE && dsc->opa == LV_OPA_COVER &&
+        dsc->recolor_opa == LV_OPA_TRANSP) {
         lv_area_t vis;
         if (_lv_area_intersect(&vis, draw_ctx->clip_area, coords)) {
             lv_coord_t img_w = lv_area_get_width(coords);
@@ -73,12 +68,8 @@ static void ppa_draw_img_decoded(lv_draw_ctx_t *draw_ctx,
             op.mode = PPA_TRANS_MODE_BLOCKING;
 
             if (ppa_do_scale_rotate_mirror(s_ppa, &op) == ESP_OK) {
-                s_hits++;
-                ppa_log_stats();
                 return;
             }
-            s_falls++;
-            ppa_log_stats();
             ESP_LOGW(TAG, "ppa srm failed, using sw draw");
         }
     }

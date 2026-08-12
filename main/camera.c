@@ -18,6 +18,7 @@
 #include "config.h"
 #include "ui.h"
 #include "bsp_wifi.h"
+#include "ppa_camera.h"
 
 #define TAG "CAM"
 
@@ -145,7 +146,6 @@ static void software_decode(uint8_t *frame, size_t flen)
 /* --------------------------- hardware decode ----------------------------- */
 static bool hw_decode(uint8_t *frame, size_t flen)
 {
-    int64_t t0 = esp_timer_get_time();
     if (!s_hw_ok) {
         return false;
     }
@@ -172,7 +172,6 @@ static bool hw_decode(uint8_t *frame, size_t flen)
     uint32_t out_size = 0;
     esp_err_t err = jpeg_decoder_process(s_hw, &dcfg, frame, (uint32_t)flen,
                                          s_hw_raw[back], HW_RAW_BYTES, &out_size);
-    int64_t t_proc = esp_timer_get_time() - t0;
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "hw decode failed (%s)", esp_err_to_name(err));
         return false;
@@ -186,19 +185,6 @@ static bool hw_decode(uint8_t *frame, size_t flen)
                         pw * 2);
     s_frame_ok = true;
     note_frame();
-
-    static int64_t last_log = 0;
-    static uint32_t cnt = 0;
-    static int64_t s_proc = 0, s_all = 0;
-    cnt++;
-    s_proc += t_proc;
-    s_all += esp_timer_get_time() - t0;
-    if (esp_timer_get_time() - last_log > 10000000) {
-        ESP_LOGI(TAG, "hw: proc %lld us, all %lld us (src %ux%u)",
-                 (long long)(s_proc / cnt), (long long)(s_all / cnt),
-                 (unsigned)info.width, (unsigned)info.height);
-        cnt = 0; s_proc = 0; s_all = 0; last_log = esp_timer_get_time();
-    }
     return true;
 }
 
@@ -313,24 +299,13 @@ static void cam_stream(esp_http_client_handle_t client)
         return;
     }
 
-    size_t total = 0;
-    int64_t t0 = esp_timer_get_time() / 1000;
-
     while (1) {
         int r = esp_http_client_read(client, (char *)chunk, 8192);
         if (r <= 0) {
             ESP_LOGW(TAG, "stream read ended (%d)", r);
             break;
         }
-        total += (size_t)r;
         consume(chunk, (size_t)r);
-
-        int64_t now = esp_timer_get_time() / 1000;
-        if (now - t0 >= 10000) {
-            ESP_LOGI(TAG, "recv %u KB/s", (unsigned)(total / (size_t)(now - t0)));
-            total = 0;
-            t0 = now;
-        }
     }
 
     free(chunk);
@@ -483,6 +458,7 @@ void camera_start(void)
         s_hw_raw[1] = jpeg_alloc_decoder_mem(HW_RAW_BYTES, &mcfg, &allocated);
         if (s_hw_raw[0] && s_hw_raw[1] && allocated >= HW_RAW_BYTES) {
             s_hw_ok = true;
+            ppa_camera_set_buffers(s_hw_raw[0], s_hw_raw[1]);
             ESP_LOGI(TAG, "hardware JPEG decoder ready (2x%u B raw)", (unsigned)allocated);
         } else {
             ESP_LOGW(TAG, "hw decoder mem alloc failed, using software decode");
