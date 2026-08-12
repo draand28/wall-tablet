@@ -50,7 +50,7 @@
  *   "CET-1CEST,M3.5.0,M10.5.0/3"           (Central European)
  *   "EST5EDT,M3.2.0,M11.1.0"               (US Eastern)
  *   "PST8PDT,M3.2.0,M11.1.0"               (US Pacific)                        */
-#define TZ_STRING       "UTC0"
+#define TZ_STRING       "EET-2EEST,M3.5.0/3,M10.5.0/4"
 
 /* ------------------------------- Entities -------------------------------- */
 /* IMPORTANT: these are PLACEHOLDERS. Replace the entity_id strings with your
