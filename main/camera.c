@@ -207,6 +207,8 @@ static void decode_and_show(uint8_t *frame, size_t flen)
 }
 
 /* ----------------------- MJPEG multipart parsing ------------------------- */
+static void maybe_decode(uint8_t *frame, size_t flen);
+
 static void consume(const uint8_t *data, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
@@ -232,12 +234,49 @@ static void consume(const uint8_t *data, size_t len)
                 s_frame_len = 0;
                 s_soi_seen = false;
                 s_prev_ff = false;
-                decode_and_show(s_frame, flen);
+                maybe_decode(s_frame, flen);
             }
         } else {
             s_frame_len = 0;
             s_soi_seen = false;
             s_prev_ff = false;
+        }
+    }
+}
+
+/* ---- decode throttling: decode the newest frame, drop stale ones ----
+ * The stream can arrive faster than the decoder can run; if we decoded every
+ * frame the network buffer would fill with old frames and the picture would
+ * lag by many seconds. Instead we decode at most every DECODE_INTERVAL_MS and
+ * always keep the most recent complete frame for the next decode slot. */
+#define DECODE_INTERVAL_MS 40
+
+static int64_t s_last_decode_ms = 0;
+static uint8_t *s_latest = NULL;
+static size_t s_latest_len = 0;
+
+static void maybe_decode(uint8_t *frame, size_t flen)
+{
+    int64_t now = esp_timer_get_time() / 1000;
+    if (now - s_last_decode_ms >= DECODE_INTERVAL_MS) {
+        s_last_decode_ms = now;
+        s_latest_len = 0;
+        decode_and_show(frame, flen);
+    } else if (s_latest && flen <= FRAME_MAX_BYTES) {
+        memcpy(s_latest, frame, flen);
+        s_latest_len = flen;
+    }
+}
+
+static void maybe_flush_latest(void)
+{
+    if (s_latest_len) {
+        int64_t now = esp_timer_get_time() / 1000;
+        if (now - s_last_decode_ms >= DECODE_INTERVAL_MS) {
+            s_last_decode_ms = now;
+            size_t flen = s_latest_len;
+            s_latest_len = 0;
+            decode_and_show(s_latest, flen);
         }
     }
 }
@@ -256,6 +295,7 @@ static void cam_stream(esp_http_client_handle_t client)
             break;
         }
         consume(chunk, (size_t)r);
+        maybe_flush_latest();
     }
 
     free(chunk);
@@ -387,10 +427,11 @@ static void cam_task(void *arg)
 void camera_start(void)
 {
     s_frame = heap_caps_malloc(FRAME_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_latest = heap_caps_malloc(FRAME_MAX_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_out[0] = heap_caps_malloc(OUTBUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_out[1] = heap_caps_malloc(OUTBUF_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     s_jpeg_work = heap_caps_malloc(JPEG_WORK_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (!s_frame || !s_out[0] || !s_out[1] || !s_jpeg_work) {
+    if (!s_frame || !s_latest || !s_out[0] || !s_out[1] || !s_jpeg_work) {
         ESP_LOGE(TAG, "failed to allocate camera buffers");
         return;
     }
