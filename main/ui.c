@@ -36,15 +36,10 @@
 static ui_toggle_fn_t g_toggle_cb = NULL;
 static ui_update_fn_t g_update_cb = NULL;
 
-static lv_obj_t *update_btn = NULL;
-static lv_obj_t *update_btn_lbl = NULL;
-
-static lv_obj_t *cam_view, *cam_img, *cam_live, *cam_status;
+static lv_obj_t *cam_view, *cam_live, *cam_status;
 static lv_obj_t *cam_fps_lbl;
 static lv_obj_t *clock_lbl, *date_lbl, *wifi_lbl;
 static lv_obj_t *more_overlay, *more_list;
-
-static lv_img_dsc_t cam_dsc;
 
 static lv_obj_t *quick_btns[QUICK_BTNS_COUNT];
 static lv_obj_t *extra_btns[EXTRA_BTNS_COUNT];
@@ -108,14 +103,6 @@ static void more_evt(lv_event_t *e)
     (void)e;
     lv_obj_clear_flag(more_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(more_overlay);
-}
-
-static void update_evt(lv_event_t *e)
-{
-    (void)e;
-    if (g_update_cb) {
-        g_update_cb();
-    }
 }
 
 static void ui_build_quick(void)
@@ -229,16 +216,6 @@ void ui_init(void)
     lv_obj_set_style_border_width(cam_view, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(cam_view, 0, 0);
 
-    memset(&cam_dsc, 0, sizeof(cam_dsc));
-    cam_dsc.header.always_zero = 0;
-    cam_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
-    cam_dsc.data_size = 0;
-    cam_dsc.data = NULL;
-
-    cam_img = lv_img_create(cam_view);
-    lv_img_set_src(cam_img, &cam_dsc);
-    lv_obj_center(cam_img);
-
     cam_status = lv_label_create(left);
     lv_label_set_text(cam_status, "camera: offline");
     lv_obj_set_style_text_font(cam_status, &lv_font_montserrat_14, 0);
@@ -275,15 +252,10 @@ void ui_init(void)
     lv_label_set_text(date_lbl, "");
     lv_obj_set_style_text_font(date_lbl, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(date_lbl, lv_color_hex(C_DIM), 0);
-    lv_obj_align_to(date_lbl, clock_lbl, LV_ALIGN_OUT_BOTTOM_RIGHT, 0, -2);
+    lv_obj_align_to(date_lbl, clock_lbl, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 4);
 
     ui_build_quick();
     ui_build_sensors(lv_scr_act());
-
-    update_btn = make_btn(right, "UPDATE", PANEL_R_W - 24, 40,
-                          update_evt, NULL);
-    lv_obj_align(update_btn, LV_ALIGN_BOTTOM_LEFT, 12, -124);
-    update_btn_lbl = lv_obj_get_child(update_btn, 0);
 
     lv_obj_t *more_btn = make_btn(right, "ALL LIGHTS", PANEL_R_W - 24, 56,
                                   more_evt, NULL);
@@ -312,39 +284,7 @@ void ui_set_update_callback(ui_update_fn_t cb)
 
 void ui_set_ota_status(const char *text)
 {
-    if (!LOCK()) return;
-    if (update_btn_lbl) {
-        lv_label_set_text(update_btn_lbl, text);
-    }
-    lv_obj_t *btn = lv_obj_get_parent(update_btn_lbl);
-    if (btn) {
-        lv_obj_set_style_bg_color(btn,
-            (strcmp(text, "update failed") == 0) ? lv_color_hex(0x8E2A2A)
-                                                 : lv_color_hex(C_OFF),
-            LV_PART_MAIN | LV_STATE_DEFAULT);
-    }
-    UNLOCK();
-}
-
-void ui_set_camera_frame(uint16_t w, uint16_t h, const uint8_t *rgb565, uint32_t stride)
-{
-    (void)stride;
-    if (!LOCK()) return;
-
-    cam_dsc.header.w = w;
-    cam_dsc.header.h = h;
-    cam_dsc.data_size = (uint32_t)w * h * 2;
-    cam_dsc.data = rgb565;
-
-    lv_img_set_src(cam_img, &cam_dsc);
-    lv_img_set_zoom(cam_img, 256); /* 1:1 blit */
-    /* left-aligned so the decoder's 16-px pad (on the right) is clipped */
-    int y = (CAM_VIEW_H - h) / 2;
-    if (y < 0) y = 0;
-    lv_obj_set_pos(cam_img, 0, y);
-    lv_obj_invalidate(cam_img);
-
-    UNLOCK();
+    (void)text; /* no on-screen button; OTA status is visible in /log */
 }
 
 void ui_set_cam_status(bool online)

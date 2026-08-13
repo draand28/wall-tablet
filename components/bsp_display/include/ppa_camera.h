@@ -13,4 +13,14 @@ void ppa_camera_init(lv_disp_t *disp);
  * only accelerates those. */
 void ppa_camera_set_buffers(const uint8_t *a, const uint8_t *b);
 
+/* Direct-to-framebuffer camera path (bypasses the LVGL refresh vsync wait):
+ * fetch the DSI frame buffers once. */
+void camera_direct_init(void);
+
+/* PPA-copy the camera frame (src_pic_w pixels per row, visible block w x h)
+ * into both panel frame buffers at the camera viewport position. Call from
+ * the camera decode task at the desired frame rate. */
+void camera_direct_show(uint16_t src_pic_w, uint16_t w, uint16_t h,
+                        const uint8_t *src);
+
 #endif /* PPA_CAMERA_H */

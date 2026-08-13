@@ -57,6 +57,9 @@ esp_err_t get_display_buff(void **buff);
 esp_err_t set_lcd_blight(uint32_t brightness);
 void fill_screen_with_color(lv_color_t color);
 void set_canvas_display(bool state);
+
+/* Get the DSI panel's frame buffers (2x, RGB565, 1024x600). */
+void bsp_get_display_framebuffers(void **fb0, void **fb1);
 #endif
 /*———————————————————————————————————————Variable declaration end——————————————-—————————————————————————*/
 #endif

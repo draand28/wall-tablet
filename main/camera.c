@@ -137,8 +137,7 @@ static void software_decode(uint8_t *frame, size_t flen)
     esp_jpeg_image_output_t out = {0};
     if (esp_jpeg_decode(&jc, &out) == ESP_OK) {
         s_front = back;
-        ui_set_camera_frame(out.width, out.height, s_out[s_front],
-                            (uint32_t)out.width * 2);
+        camera_direct_show(out.width, out.width, out.height, s_out[s_front]);
         s_frame_ok = true;
     }
 }
@@ -177,12 +176,10 @@ static bool hw_decode(uint8_t *frame, size_t flen)
         return false;
     }
 
-    /* display the decoder's padded buffer directly: the 16-px right pad is
-     * clipped by the viewport, and we only draw info.height rows, so the
-     * bottom pad never shows. No pixel copy needed. */
+    /* display the decoder's padded buffer directly into the panel frame
+     * buffers (bypasses LVGL's vsync-synced refresh entirely) */
     s_hw_front = back;
-    ui_set_camera_frame((uint16_t)pw, info.height, s_hw_raw[s_hw_front],
-                        pw * 2);
+    camera_direct_show((uint16_t)pw, info.width, info.height, s_hw_raw[s_hw_front]);
     s_frame_ok = true;
     note_frame();
     return true;
@@ -466,6 +463,8 @@ void camera_start(void)
     } else {
         ESP_LOGW(TAG, "hw decoder engine failed, using software decode");
     }
+
+    camera_direct_init();
 
     s_latest_mux = xSemaphoreCreateMutex();
     if (!s_latest_mux) {

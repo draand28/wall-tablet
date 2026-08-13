@@ -397,5 +397,10 @@ esp_err_t get_display_buff(void **buff)
     return err;
 }
 
+void bsp_get_display_framebuffers(void **fb0, void **fb1)
+{
+    esp_lcd_dpi_panel_get_frame_buffer(panel_handle, 2, fb0, fb1);
+}
+
 #endif
 /*———————————————————————————————————————Functional function end—————————————————————————————————————————*/
