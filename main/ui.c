@@ -9,6 +9,7 @@
 #include "lvgl.h"
 
 #include "config.h"
+#include "ppa_camera.h"
 
 #define TAG "UI"
 
@@ -95,12 +96,14 @@ static void extra_evt(lv_event_t *e)
 static void back_evt(lv_event_t *e)
 {
     (void)e;
+    camera_direct_set_paused(false);
     lv_obj_add_flag(more_overlay, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void more_evt(lv_event_t *e)
 {
     (void)e;
+    camera_direct_set_paused(true);
     lv_obj_clear_flag(more_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(more_overlay);
 }
@@ -142,22 +145,39 @@ static void ui_build_sensors(lv_obj_t *parent)
     }
 }
 
+#define EXTRA_COLS 4
+#define EXTRA_BOX_H 110
+#define EXTRA_GAP 12
+
 static void ui_build_extra_list(void)
 {
+    static lv_coord_t col_dsc[EXTRA_COLS + 1];
+    for (int c = 0; c < EXTRA_COLS; c++) {
+        col_dsc[c] = LV_GRID_FR(1);
+    }
+    col_dsc[EXTRA_COLS] = LV_GRID_TEMPLATE_LAST;
+
+    static lv_coord_t row_dsc[2 + 1];
+    row_dsc[0] = EXTRA_BOX_H;
+    row_dsc[1] = EXTRA_BOX_H;
+    row_dsc[2] = LV_GRID_TEMPLATE_LAST;
+
     more_list = lv_obj_create(more_overlay);
     lv_obj_set_pos(more_list, 12, 66);
     lv_obj_set_size(more_list, SCR_W - 24, SCR_H - 66 - 12);
     lv_obj_set_style_bg_color(more_list, lv_color_hex(C_BG), 0);
     lv_obj_set_style_border_width(more_list, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_pad_row(more_list, 8, 0);
-    lv_obj_set_style_pad_column(more_list, 0, 0);
-    lv_obj_set_style_pad_top(more_list, 0, 0);
-    lv_obj_set_style_pad_bottom(more_list, 0, 0);
-    lv_obj_set_flex_flow(more_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(more_list, 0, 0);
+    lv_obj_set_style_pad_row(more_list, EXTRA_GAP, 0);
+    lv_obj_set_style_pad_column(more_list, EXTRA_GAP, 0);
+    lv_obj_set_grid_dsc_array(more_list, col_dsc, row_dsc);
 
     for (int i = 0; i < (int)EXTRA_BTNS_COUNT; i++) {
-        extra_btns[i] = make_btn(more_list, EXTRA_BTNS[i].label, SCR_W - 24, 56,
+        extra_btns[i] = make_btn(more_list, EXTRA_BTNS[i].label, 0, 0,
                                  extra_evt, (void *)(uintptr_t)i);
+        lv_obj_set_grid_cell(extra_btns[i], LV_GRID_ALIGN_STRETCH,
+                             i % EXTRA_COLS, 1, LV_GRID_ALIGN_STRETCH,
+                             i / EXTRA_COLS, 1);
     }
 }
 

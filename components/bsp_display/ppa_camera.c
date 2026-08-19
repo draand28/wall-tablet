@@ -19,11 +19,17 @@ static ppa_client_handle_t s_ppa = NULL;
 static bool s_ppa_ok = false;
 static const uint8_t *s_cam_bufs[2] = { NULL, NULL };
 static void *s_fb[2] = { NULL, NULL };
+static volatile bool s_paused = false;
 
 void ppa_camera_set_buffers(const uint8_t *a, const uint8_t *b)
 {
     s_cam_bufs[0] = a;
     s_cam_bufs[1] = b;
+}
+
+void camera_direct_set_paused(bool paused)
+{
+    s_paused = paused;
 }
 
 void camera_direct_init(void)
@@ -34,6 +40,9 @@ void camera_direct_init(void)
 void camera_direct_show(uint16_t src_pic_w, uint16_t w, uint16_t h,
                         const uint8_t *src)
 {
+    if (s_paused) {
+        return;
+    }
     if (!s_fb[0] || !s_fb[1]) {
         return;
     }

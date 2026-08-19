@@ -34,7 +34,7 @@ idf.py -B "C:\Users\draan\AppData\Local\Temp\opencode\wall-tablet-build" build
 if ($LASTEXITCODE -ne 0) { Write-Error "build failed"; exit 1 }
 
 if ($SshTarget) {
-    Write-Host "Copying wall_tablet.bin to $SshTarget:/home/pi/fw/"
+    Write-Host "Copying wall_tablet.bin to ${SshTarget}:/home/pi/fw/"
     scp "$bin" "${SshTarget}:/home/pi/fw/wall_tablet.bin"
     Write-Host "Done. Tap UPDATE on the tablet."
 } elseif ($ServeLocal) {

@@ -23,4 +23,9 @@ void camera_direct_init(void);
 void camera_direct_show(uint16_t src_pic_w, uint16_t w, uint16_t h,
                         const uint8_t *src);
 
+/* Pause/resume the direct-to-framebuffer blit. Pause while a full-screen LVGL
+ * overlay (e.g. "ALL LIGHTS") is open, otherwise the camera would keep
+ * overwriting the framebuffer region that LVGL is covering. */
+void camera_direct_set_paused(bool paused);
+
 #endif /* PPA_CAMERA_H */
