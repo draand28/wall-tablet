@@ -93,11 +93,26 @@ static void extra_evt(lv_event_t *e)
     }
 }
 
+/* The DSI panel shows one of its two framebuffers while LVGL draws into the
+ * other. Showing/hiding a full-screen overlay only repaints the buffer LVGL
+ * is actively drawing into; the other framebuffer keeps the previous screen
+ * and flashes whenever the panel swaps to it (e.g. on every clock tick).
+ * Repaint the whole screen into BOTH framebuffers so the two never diverge
+ * across an overlay transition. */
+static void force_full_refresh(void)
+{
+    for (int i = 0; i < 2; i++) {
+        lv_obj_invalidate(lv_scr_act());
+        lv_refr_now(NULL);
+    }
+}
+
 static void back_evt(lv_event_t *e)
 {
     (void)e;
-    camera_direct_set_paused(false);
     lv_obj_add_flag(more_overlay, LV_OBJ_FLAG_HIDDEN);
+    force_full_refresh();
+    camera_direct_set_paused(false);
 }
 
 static void more_evt(lv_event_t *e)
@@ -106,6 +121,7 @@ static void more_evt(lv_event_t *e)
     camera_direct_set_paused(true);
     lv_obj_clear_flag(more_overlay, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(more_overlay);
+    force_full_refresh();
 }
 
 static void ui_build_quick(void)
